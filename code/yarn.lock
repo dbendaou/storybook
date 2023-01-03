@@ -5891,7 +5891,6 @@ __metadata:
     "@angular/forms": ^13.3.6
     "@angular/platform-browser": ^13.3.6
     "@angular/platform-browser-dynamic": ^13.3.6
-    "@nrwl/workspace": 14.6.1
     "@storybook/builder-webpack5": 7.0.0-beta.19
     "@storybook/client-logger": 7.0.0-beta.19
     "@storybook/core-client": 7.0.0-beta.19
@@ -5942,7 +5941,6 @@ __metadata:
     "@angular/platform-browser": ">=13.0.0"
     "@angular/platform-browser-dynamic": ">=13.0.0"
     "@babel/core": "*"
-    "@nrwl/workspace": 14.6.1
     react: ^16.8.0 || ^17.0.0 || ^18.0.0
     react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0
     rxjs: ^6.0.0 || ^7.4.0
@@ -5950,8 +5948,6 @@ __metadata:
     zone.js: ^0.8.29 || >= 0.9.0 < 1.0.0
   peerDependenciesMeta:
     "@angular/cli":
-      optional: true
-    "@nrwl/workspace":
       optional: true
   languageName: unknown
   linkType: soft
