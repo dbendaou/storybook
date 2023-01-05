@@ -1,131 +1,126 @@
 import prompts from 'prompts';
-import fs from 'fs';
 import path from 'path';
 import chalk from 'chalk';
 import boxen from 'boxen';
 import { dedent } from 'ts-dedent';
-import { createAndInit, exec } from './repro-generators/scripts';
-import * as configs from './repro-generators/configs';
-import type { Parameters } from './repro-generators/configs';
-import type { SupportedRenderers } from './project_types';
+import { downloadTemplate } from 'giget';
+
+import { existsSync } from 'fs-extra';
+import { allTemplates as TEMPLATES } from './repro-templates';
 
 const logger = console;
 
 interface ReproOptions {
-  outputDirectory: string;
-  renderer?: SupportedRenderers;
-  list?: boolean;
-  template?: string;
-  e2e?: boolean;
-  registry?: string;
-  local?: boolean;
-  generator?: string;
-  pnp?: boolean;
+  filterValue?: string;
+  output?: string;
+  branch?: string;
+  init?: boolean;
 }
+type Choice = keyof typeof TEMPLATES;
 
-const TEMPLATES = configs as Record<string, Parameters>;
-
-// Create a curate list of template because some of them only make sense in E2E
-// context, fon instance react_in_yarn_workspace
-const CURATED_TEMPLATES = Object.fromEntries(
-  Object.entries(configs).filter((entry) => entry[0] !== 'react_in_yarn_workspace')
-) as Record<string, Parameters>;
-
-const RENDERERS = Object.values(CURATED_TEMPLATES).reduce<Record<SupportedRenderers, Parameters[]>>(
-  (acc, cur) => {
-    acc[cur.renderer] = [...(acc[cur.renderer] || []), cur];
-    return acc;
-  },
-  {} as Record<SupportedRenderers, Parameters[]>
-);
+const toChoices = (c: Choice): prompts.Choice => ({ title: TEMPLATES[c].name, value: c });
 
 export const repro = async ({
-  outputDirectory,
-  list,
-  template,
-  renderer,
-  generator,
-  e2e,
-  local,
-  registry,
-  pnp,
+  output: outputDirectory,
+  filterValue,
+  branch,
+  init,
 }: ReproOptions) => {
-  logger.info(
-    boxen(
-      dedent`
-        🤗 Welcome to ${chalk.yellow('sb repro')}! 🤗 
+  const filterRegex = new RegExp(`^${filterValue || ''}`, 'i');
 
-        Create a ${chalk.green('new project')} to minimally reproduce Storybook issues.
-        
-        1. select an environment that most closely matches your project setup.
-        2. select a location for the reproduction, outside of your project.
-        
-        After the reproduction is ready, we'll guide you through the next steps.
-        `.trim(),
-      { borderStyle: 'round', padding: 1, borderColor: '#F1618C' } as any
-    )
-  );
-  if (list) {
-    logger.info('🌈 Available templates');
-    Object.entries(RENDERERS).forEach(([r, templates]) => {
-      logger.info(r);
-      templates.forEach((t) => logger.info(`- ${t.name}`));
-      if (r === 'other') {
-        logger.info('- blank');
-      }
-    });
+  const keys = Object.keys(TEMPLATES) as Choice[];
+  // get value from template and reduce through TEMPLATES to filter out the correct template
+  const choices = keys.reduce<Choice[]>((acc, group) => {
+    const current = TEMPLATES[group];
+
+    if (!filterValue) {
+      acc.push(group);
+      return acc;
+    }
+
+    if (
+      current.name.match(filterRegex) ||
+      group.match(filterRegex) ||
+      current.expected.builder.match(filterRegex) ||
+      current.expected.framework.match(filterRegex) ||
+      current.expected.renderer.match(filterRegex)
+    ) {
+      acc.push(group);
+      return acc;
+    }
+
+    return acc;
+  }, []);
+
+  if (choices.length === 0) {
+    logger.info(
+      boxen(
+        dedent`
+          🔎 You filtered out all templates. 🔍
+
+          After filtering all the templates with "${chalk.yellow(
+            filterValue
+          )}", we found no results. Please try again with a different filter.
+
+          Available templates:
+          ${keys.map((key) => chalk.blue`- ${key}`).join('\n')}
+          `.trim(),
+        { borderStyle: 'round', padding: 1, borderColor: '#F1618C' } as any
+      )
+    );
+    process.exit(1);
+  }
+
+  let selectedTemplate: Choice | null = null;
+
+  if (choices.length === 1) {
+    [selectedTemplate] = choices;
+  } else {
+    logger.info(
+      boxen(
+        dedent`
+          🤗 Welcome to ${chalk.yellow('sb repro')}! 🤗
+
+          Create a ${chalk.green('new project')} to minimally reproduce Storybook issues.
+
+          1. select an environment that most closely matches your project setup.
+          2. select a location for the reproduction, outside of your project.
+
+          After the reproduction is ready, we'll guide you through the next steps.
+          `.trim(),
+        { borderStyle: 'round', padding: 1, borderColor: '#F1618C' } as any
+      )
+    );
+
+    selectedTemplate = await promptSelectedTemplate(choices);
+  }
+
+  const hasSelectedTemplate = !!(selectedTemplate ?? null);
+  if (!hasSelectedTemplate) {
+    logger.error('Somehow we got no templates. Please rerun this command!');
     return;
   }
 
-  let selectedTemplate = template;
-  let selectedRenderer = renderer;
-  if (!selectedTemplate && !generator) {
-    if (!selectedRenderer) {
-      const { renderer: rendererOpt } = await prompts({
-        type: 'select',
-        message: '🌈 Select the repro renderer',
-        name: 'renderer',
-        choices: Object.keys(RENDERERS).map((f) => ({ title: f, value: f })),
-      });
-      selectedRenderer = rendererOpt;
-    }
-    if (!selectedRenderer) {
-      throw new Error('🚨 Repro: please select a renderer!');
-    }
-    selectedTemplate = (
-      await prompts({
-        type: 'select',
-        message: '📝 Select the repro base template',
-        name: 'template',
-        choices: RENDERERS[selectedRenderer as SupportedRenderers].map((f) => ({
-          title: f.name,
-          value: f.name,
-        })),
-      })
-    ).template;
-  }
-
-  const selectedConfig = !generator
-    ? TEMPLATES[selectedTemplate]
-    : {
-        name: 'custom',
-        version: 'custom',
-        generator,
-      };
+  const selectedConfig = TEMPLATES[selectedTemplate];
 
   if (!selectedConfig) {
     throw new Error('🚨 Repro: please specify a valid template type');
   }
 
   let selectedDirectory = outputDirectory;
+  const outputDirectoryName = outputDirectory || selectedTemplate;
+  if (selectedDirectory && existsSync(`${selectedDirectory}`)) {
+    logger.info(`⚠️  ${selectedDirectory} already exists! Overwriting...`);
+  }
+
   if (!selectedDirectory) {
     const { directory } = await prompts({
       type: 'text',
       message: 'Enter the output directory',
       name: 'directory',
-      initial: selectedConfig.name,
-      validate: (directoryName) =>
-        fs.existsSync(directoryName)
+      initial: outputDirectoryName,
+      validate: async (directoryName) =>
+        existsSync(directoryName)
           ? `${directoryName} already exists. Please choose another name.`
           : true,
     });
@@ -133,22 +128,31 @@ export const repro = async ({
   }
 
   try {
-    const cwd = path.isAbsolute(selectedDirectory)
+    const templateDestination = path.isAbsolute(selectedDirectory)
       ? selectedDirectory
       : path.join(process.cwd(), selectedDirectory);
 
-    logger.info(`🏃 Running ${selectedTemplate} into ${cwd}`);
+    logger.info(`🏃 Adding ${selectedConfig.name} into ${templateDestination}`);
 
-    await createAndInit(cwd, selectedConfig, {
-      registry,
-      e2e: !!e2e,
-      pnp: !!pnp,
-      local: !!local,
-    });
-
-    if (!e2e) {
-      await initGitRepo(cwd);
+    logger.log('📦 Downloading repro template...');
+    try {
+      const templateType = init ? 'after-storybook' : 'before-storybook';
+      // Download the repro based on subfolder "after-storybook" and selected branch
+      await downloadTemplate(
+        `github:storybookjs/repro-sandboxes/${selectedTemplate}/${templateType}#${branch}`,
+        {
+          force: true,
+          dir: templateDestination,
+        }
+      );
+    } catch (err) {
+      logger.error(`🚨 Failed to download repro template: ${err.message}`);
+      throw err;
     }
+
+    const initMessage = init
+      ? chalk.yellow(`yarn install\nyarn storybook`)
+      : `Recreate your setup, then ${chalk.yellow(`run npx storybook init`)}`;
 
     logger.info(
       boxen(
@@ -156,10 +160,10 @@ export const repro = async ({
         🎉 Your Storybook reproduction project is ready to use! 🎉
 
         ${chalk.yellow(`cd ${selectedDirectory}`)}
-        ${chalk.yellow(`yarn storybook`)}
+        ${initMessage}
 
         Once you've recreated the problem you're experiencing, please:
-        
+
         1. Document any additional steps in ${chalk.cyan('README.md')}
         2. Publish the repository to github
         3. Link to the repro repository in your issue
@@ -175,10 +179,13 @@ export const repro = async ({
   }
 };
 
-const initGitRepo = async (cwd: string) => {
-  await exec('git init', { cwd });
-  await exec('echo "node_modules" >> .gitignore', { cwd });
-  await exec('git add --all', { cwd });
-  await exec('git commit -am "added storybook"', { cwd });
-  await exec('git tag repro-base', { cwd });
-};
+async function promptSelectedTemplate(choices: Choice[]): Promise<Choice | null> {
+  const { template } = await prompts({
+    type: 'select',
+    message: '🌈 Select the template',
+    name: 'template',
+    choices: choices.map(toChoices),
+  });
+
+  return template || null;
+}
