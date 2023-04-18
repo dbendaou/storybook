@@ -2,7 +2,7 @@ import global from 'global';
 import dedent from 'ts-dedent';
 import type { RenderContext } from '@storybook/store';
 // @ts-ignore
-import Component from '@ember/component'; // eslint-disable-line import/no-unresolved
+import Component from '@glimmer/component';
 import { OptionsArgs, EmberFramework } from './types';
 
 const { window: globalWindow, document } = global;
